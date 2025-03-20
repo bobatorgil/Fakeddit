@@ -1,3 +1,4 @@
+# Import statements
 import os
 import numpy as np
 import pandas as pd
@@ -6,43 +7,63 @@ import torch.nn as nn
 import torch.optim as optim
 from PIL import Image, UnidentifiedImageError
 from sklearn.metrics import accuracy_score, f1_score
-from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, Dataset
 from torchvision.models import ResNet50_Weights, resnet50
 from torchvision.transforms import v2
 from transformers import BertTokenizer, BertModel
-from torch.cuda.amp import GradScaler, autocast
 
-# Define paths
-dataset_path = '/home/iai/Desktop/ohw/Fakeddit/dataset/multimodal_train.tsv'
-image_dir = '/home/iai/Desktop/ohw/Fakeddit/dataset/images'
+# Paths to datasets
+train_dataset_path = '/home/iai3/Desktop/ohw/Fakeddit/dataset/multimodal_train.tsv'
+validate_dataset_path = '/home/iai3/Desktop/ohw/Fakeddit/dataset/multimodal_validate.tsv'
+test_dataset_path = '/home/iai3/Desktop/ohw/Fakeddit/dataset/multimodal_test_public.tsv'
 
-# Load dataset
-df = pd.read_csv(dataset_path, sep='\t')
+# Load datasets
+train_df = pd.read_csv(train_dataset_path, sep='\t')
+validate_df = pd.read_csv(validate_dataset_path, sep='\t')
+test_df = pd.read_csv(test_dataset_path, sep='\t')
 
-# Filter the DataFrame to include only rows with images
-df = df[df['hasImage'] == True]
-
-# Device configuration
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
+if torch.cuda.is_available():
+    device = torch.device('cuda')
+    print("CUDA is available. Using GPU.")
+else:
+    device = torch.device('cpu')
+    print("CUDA is not available. Using CPU.")
+    
 # Drop unnecessary columns
-df.drop(['6_way_label', '3_way_label', 'title'], axis=1, inplace=True)
-
-# Splitting the dataset
-df, df_backup = train_test_split(
-    df,
-    test_size=0.05,
-    shuffle=True,
-    stratify=df["2_way_label"]
-)
-
-# Reset indexes
-df.reset_index(drop=True, inplace=True)
+train_df.drop(['6_way_label', '3_way_label', 'title'], axis=1, inplace=True)
+validate_df.drop(['6_way_label', '3_way_label', 'title'], axis=1, inplace=True)
+test_df.drop(['6_way_label', '3_way_label', 'title'], axis=1, inplace=True)
 
 # Replace NaN values with empty strings
-df = df.replace(np.nan, '', regex=True)
-df.fillna('', inplace=True)
+train_df = train_df.replace(np.nan, '', regex=True)
+train_df.fillna('', inplace=True)
+validate_df = validate_df.replace(np.nan, '', regex=True)
+validate_df.fillna('', inplace=True)
+test_df = test_df.replace(np.nan, '', regex=True)
+test_df.fillna('', inplace=True)
+
+# Define the image directory
+image_dir = '/home/iai3/Desktop/ohw/Fakeddit/dataset/images'
+
+# Construct image paths
+train_df['image_path'] = image_dir + '/' + train_df['id'].astype(str) + '.jpg'
+validate_df['image_path'] = image_dir + '/' + validate_df['id'].astype(str) + '.jpg'
+test_df['image_path'] = image_dir + '/' + test_df['id'].astype(str) + '.jpg'
+
+# Filter the DataFrame to include only rows with existing images
+train_df = train_df[train_df['image_path'].apply(lambda x: os.path.exists(x))]
+validate_df = validate_df[validate_df['image_path'].apply(lambda x: os.path.exists(x))]
+test_df = test_df[test_df['image_path'].apply(lambda x: os.path.exists(x))]
+
+# Reset index after filtering
+train_df.reset_index(drop=True, inplace=True)
+validate_df.reset_index(drop=True, inplace=True)
+test_df.reset_index(drop=True, inplace=True)
+
+# Debugging statements
+print(f"Number of training samples: {len(train_df)}")
+print(f"Number of validation samples: {len(validate_df)}")
+print(f"Number of test samples: {len(test_df)}")
 
 # Image transformations
 image_transforms = v2.Compose([
@@ -52,23 +73,25 @@ image_transforms = v2.Compose([
     v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
 
-# Define the dataset class
+# BERT tokenizer
+tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+
 class MultimodalDataset(Dataset):
-    def __init__(self, dataframe, image_dir, transform=None):
+    def __init__(self, dataframe, img_dir, transform=None, tokenizer=None, max_length=128):
         self.dataframe = dataframe
-        self.image_dir = image_dir
+        self.image_dir = img_dir
         self.transform = transform
-        self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+        self.tokenizer = tokenizer
+        self.max_length = max_length
 
     def __len__(self):
         return len(self.dataframe)
 
     def __getitem__(self, index):
-        row = self.dataframe.iloc[index]
-        image_id = row['id']
+        image_id = self.dataframe.loc[index, 'id']
         image_path = os.path.join(self.image_dir, f"{image_id}.jpg")
-        text = row['clean_title']
-        label = row['2_way_label']
+        text = self.dataframe.loc[index, 'clean_title']
+        label = self.dataframe.loc[index, '2_way_label']
 
         # Process image
         try:
@@ -84,14 +107,13 @@ class MultimodalDataset(Dataset):
         encoding = self.tokenizer.encode_plus(
             text,
             add_special_tokens=True,
-            max_length=128,
+            max_length=self.max_length,
             return_token_type_ids=False,
             padding='max_length',
+            truncation=True,
             return_attention_mask=True,
             return_tensors='pt',
-            truncation=True
         )
-
         input_ids = encoding['input_ids'].flatten()
         attention_mask = encoding['attention_mask'].flatten()
 
@@ -102,92 +124,154 @@ class MultimodalDataset(Dataset):
             'label': torch.tensor(label, dtype=torch.long)
         }
 
-# Create the dataset and dataloader
-dataset = MultimodalDataset(df, image_dir, transform=image_transforms)
-dataloader = DataLoader(dataset, batch_size=32, shuffle=True, num_workers=4)  # Use multiple workers
+# Create the datasets and dataloaders
+train_dataset = MultimodalDataset(train_df, image_dir, transform=image_transforms, tokenizer=tokenizer)
+train_dataloader = DataLoader(train_dataset, batch_size=32, shuffle=True)
 
-# Define the multimodal model
+validate_dataset = MultimodalDataset(validate_df, image_dir, transform=image_transforms, tokenizer=tokenizer)
+validate_dataloader = DataLoader(validate_dataset, batch_size=32, shuffle=False)
+
+test_dataset = MultimodalDataset(test_df, image_dir, transform=image_transforms, tokenizer=tokenizer)
+test_dataloader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+
+# Load the pre-trained ResNet50 model
+resnet_model = resnet50(weights=ResNet50_Weights.DEFAULT)
+num_ftrs = resnet_model.fc.in_features
+resnet_model.fc = nn.Identity()  # Remove the final fully connected layer
+
+# Load the pre-trained BERT model
+bert_model = BertModel.from_pretrained('bert-base-uncased')
+
 class MultimodalModel(nn.Module):
-    def __init__(self):
+    def __init__(self, resnet_model, bert_model, num_ftrs, num_classes=2):
         super(MultimodalModel, self).__init__()
-        self.bert = BertModel.from_pretrained('bert-base-uncased')
-        self.resnet = resnet50(weights=ResNet50_Weights.DEFAULT)
-        self.resnet.fc = nn.Identity()  # Remove the final fully connected layer
-        self.fc = nn.Linear(self.bert.config.hidden_size + 2048, 2)  # 2 output classes
+        self.resnet_model = resnet_model
+        self.bert_model = bert_model
+        self.fc = nn.Linear(num_ftrs + bert_model.config.hidden_size, num_classes)
 
-    def forward(self, bert_input_ids, attention_mask, images):
-        bert_outputs = self.bert(input_ids=bert_input_ids, attention_mask=attention_mask)
-        bert_pooled_output = bert_outputs.pooler_output
+    def forward(self, image, input_ids, attention_mask):
+        # Get image features
+        image_features = self.resnet_model(image)
 
-        resnet_outputs = self.resnet(images)
+        # Get text features
+        bert_outputs = self.bert_model(input_ids=input_ids, attention_mask=attention_mask)
+        text_features = bert_outputs.last_hidden_state[:, 0, :]  # Use the [CLS] token representation
 
-        combined = torch.cat((bert_pooled_output, resnet_outputs), dim=1)
-        return self.fc(combined)
+        # Concatenate features
+        combined_features = torch.cat((image_features, text_features), dim=1)
 
-# Initialize the model, loss function, and optimizer
-model = MultimodalModel().to(device)
+        # Apply final classification layer
+        output = self.fc(combined_features)
+        return output
+
+# Initialize the multimodal model
+model = MultimodalModel(resnet_model, bert_model, num_ftrs)
+model = model.to(device)
+
+# Define the loss function and optimizer
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=0.001)
-scaler = GradScaler()  # For mixed precision training
 
-# Training loop
-num_epochs = 3
+# Training loop with early stopping
+num_epochs = 20
+patience = 3
+best_val_accuracy = 0.0
+patience_counter = 0
 
 # Open a file to save the results
-results_path = '/home/iai/Desktop/ohw/Fakeddit/dataset/results2.txt'
-with open(results_path, 'w', encoding='utf-8') as f:
+results_path = '/home/iai3/Desktop/ohw/Fakeddit/dataset/results.txt'
+with open(results_path, 'w') as f:
     for epoch in range(num_epochs):
-        print(f"Starting epoch {epoch+1}/{num_epochs}")
         model.train()
         running_loss = 0.0
-        for batch in dataloader:
+        for batch in train_dataloader:
             images = batch['image'].to(device)
             input_ids = batch['input_ids'].to(device)
             attention_mask = batch['attention_mask'].to(device)
             labels = batch['label'].to(device)
 
             optimizer.zero_grad()
-            with autocast():  # Mixed precision training
-                outputs = model(bert_input_ids=input_ids, attention_mask=attention_mask, images=images)
-                loss = criterion(outputs, labels)
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
+            outputs = model(images, input_ids, attention_mask)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
 
             running_loss += loss.item()
 
-        epoch_loss = running_loss / len(dataloader)
+        epoch_loss = running_loss / len(train_dataloader)
         print(f"Epoch {epoch+1}/{num_epochs}, Loss: {epoch_loss:.4f}")
 
-        # Evaluation
-        model.eval()
+        # Evaluation on the validation set
+        model.eval()  # Set the model to evaluation mode
         all_predictions = []
         all_labels = []
 
-        with torch.no_grad():
-            for batch in dataloader:
+        with torch.no_grad():  # Disable gradient calculations during evaluation
+            for batch in validate_dataloader:
                 images = batch['image'].to(device)
                 input_ids = batch['input_ids'].to(device)
                 attention_mask = batch['attention_mask'].to(device)
                 labels = batch['label'].to(device)
 
-                outputs = model(bert_input_ids=input_ids, attention_mask=attention_mask, images=images)
-                _, predictions = torch.max(outputs, 1)
+                outputs = model(images, input_ids, attention_mask)
+                _, predictions = torch.max(outputs, 1)  # Get predicted class labels
 
-                all_predictions.extend(predictions.cpu().numpy())
-                all_labels.extend(labels.cpu().numpy())
+                all_predictions.extend(predictions.cpu().numpy())  # Store predictions
+                all_labels.extend(labels.cpu().numpy())  # Store true labels
 
         # Calculate accuracy and F1 score
-        accuracy = accuracy_score(all_labels, all_predictions)
-        f1 = f1_score(all_labels, all_predictions)
+        val_accuracy = accuracy_score(all_labels, all_predictions)
+        val_f1 = f1_score(all_labels, all_predictions)
 
-        print(f"Epoch {epoch+1}/{num_epochs}, Accuracy: {accuracy:.4f}, F1 Score: {f1:.4f}")
+        print(f"Epoch {epoch+1}/{num_epochs}, Validation Accuracy: {val_accuracy:.4f}, Validation F1 Score: {val_f1:.4f}")
+
+        # Save results to a file
+        f.write(f"Epoch {epoch+1}/{num_epochs}, Validation Accuracy: {val_accuracy:.4f}, Validation F1 Score: {val_f1:.4f}")
 
         # Save results to a file
         f.write(f"Epoch {epoch+1}/{num_epochs}\n")
         f.write(f"Loss: {epoch_loss:.4f}\n")
-        f.write(f"Accuracy: {accuracy:.4f}\n")
-        f.write(f"F1 Score: {f1:.4f}\n")
+        f.write(f"Validation Accuracy: {val_accuracy:.4f}\n")
+        f.write(f"Validation F1 Score: {val_f1:.4f}\n")
         f.write('\n')
+
+        # Early stopping
+        if val_accuracy > best_val_accuracy:
+            best_val_accuracy = val_accuracy
+            patience_counter = 0
+        else:
+            patience_counter += 1
+            if patience_counter >= patience:
+                print("Early stopping triggered.")
+                break
+
+# Final evaluation on the test set
+model.eval()  # Set the model to evaluation mode
+all_predictions = []
+all_labels = []
+
+with torch.no_grad():  # Disable gradient calculations during evaluation
+    for batch in test_dataloader:
+        images = batch['image'].to(device)
+        input_ids = batch['input_ids'].to(device)
+        attention_mask = batch['attention_mask'].to(device)
+        labels = batch['label'].to(device)
+
+        outputs = model(images, input_ids, attention_mask)
+        _, predictions = torch.max(outputs, 1)  # Get predicted class labels
+
+        all_predictions.extend(predictions.cpu().numpy())  # Store predictions
+        all_labels.extend(labels.cpu().numpy())  # Store true labels
+
+# Calculate accuracy and F1 score
+test_accuracy = accuracy_score(all_labels, all_predictions)
+test_f1 = f1_score(all_labels, all_predictions)
+
+print(f"Test Accuracy: {test_accuracy:.4f}, Test F1 Score: {test_f1:.4f}")
+
+# Save test results to a file
+with open(results_path, 'a') as f:
+    f.write(f"Test Accuracy: {test_accuracy:.4f}\n")
+    f.write(f"Test F1 Score: {test_f1:.4f}\n")
 
 print("Training complete.")
