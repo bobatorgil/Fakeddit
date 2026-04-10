@@ -1,6 +1,6 @@
 # Multimodal Fake News Detection (Fakeddit)
 
-## 📌 Overview
+##  Overview
 This project focuses on detecting fake news using multimodal data from the :contentReference[oaicite:0]{index=0}.  
 The goal is to analyze and model relationships between textual and visual information for improved fake news classification.
 
@@ -8,7 +8,7 @@ This repository provides a baseline implementation using image features, with ex
 
 ---
 
-## 📂 Dataset
+##  Dataset
 
 We use the Fakeddit dataset, which contains:
 
@@ -34,7 +34,7 @@ data/
 
 ---
 
-## ⚙️ Data Processing
+##  Data Processing
 
 - Remove unused columns (`6_way_label`, `3_way_label`, `title`)
 - Handle missing values by replacing with empty strings
@@ -44,7 +44,7 @@ data/
 
 ---
 
-## 🖼️ Image Processing
+##  Image Processing
 
 All images are preprocessed using:
 
@@ -56,7 +56,7 @@ Invalid images are automatically skipped during dataset loading.
 
 ---
 
-## 🧠 Model
+##  Model
 
 We implement an image-based baseline using:
 
@@ -66,7 +66,7 @@ We implement an image-based baseline using:
 
 ---
 
-## ⚙️ Training
+##  Training
 
 - Loss Function: CrossEntropyLoss
 - Optimizer: Adam
@@ -78,7 +78,7 @@ Training is performed on GPU if available.
 
 ---
 
-## 📊 Evaluation
+##  Evaluation
 
 Evaluation metrics:
 
@@ -89,7 +89,7 @@ Predictions are obtained using argmax over output logits.
 
 ---
 
-## 📈 Results
+##  Results
 
 Accuracy: 0.9134
 F1 Score: 0.9216
@@ -97,7 +97,7 @@ F1 Score: 0.9216
 
 ---
 
-## 🧩 Features
+##  Features
 
 - Image-based fake news detection baseline
 - Automatic image downloading and validation
@@ -106,7 +106,7 @@ F1 Score: 0.9216
 
 ---
 
-## 🚀 How to Run
+##  How to Run
 
 ### Install dependencies
 ```bash
